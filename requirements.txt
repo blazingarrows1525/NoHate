@@ -5,4 +5,5 @@ pandas
 scikit-learn
 nltk
 gunicorn
-kagglehub[pandas-datasets]
+streamlit
+plotly

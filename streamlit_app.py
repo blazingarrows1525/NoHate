@@ -1,0 +1,326 @@
+"""
+NoHate - Hate Speech Detection (Streamlit Version)
+NLP Pipeline: Text Preprocessing → TF-IDF Vectorization → Logistic Regression
+"""
+
+import os
+import re
+import string
+import numpy as np
+import pandas as pd
+import nltk
+import streamlit as st
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
+
+# Download NLTK data
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+nltk.download('omw-1.4', quiet=True)
+nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ─── Hateful Word Lexicon ────────────────────────────────────────────────────
+HATE_INDICATORS = {
+    'hate', 'kill', 'die', 'stupid', 'idiot', 'dumb', 'ugly', 'loser',
+    'trash', 'garbage', 'worthless', 'pathetic', 'disgusting', 'terrible',
+    'horrible', 'worst', 'awful', 'nasty', 'evil', 'sick', 'freak',
+    'moron', 'fool', 'jerk', 'creep', 'scum', 'filth', 'vermin',
+    'destroy', 'attack', 'threat', 'violence', 'abuse', 'harass',
+    'bully', 'racist', 'sexist', 'bigot', 'slur', 'degrade',
+    'inferior', 'subhuman', 'retard', 'cripple', 'terrorist',
+    'extremist', 'radical', 'toxic', 'venom', 'poison', 'corrupt',
+    'degenerate', 'savage', 'barbaric', 'primitive', 'uncivilized',
+    'shut', 'stfu', 'gtfo', 'damn', 'hell', 'crap',
+}
+
+WORD_IMPROVEMENTS = {
+    'hate': 'strongly dislike', 'stupid': 'uninformed', 'idiot': 'person',
+    'dumb': 'unaware', 'ugly': 'unattractive', 'loser': 'unsuccessful person',
+    'trash': 'waste', 'worthless': 'undervalued', 'pathetic': 'unfortunate',
+    'disgusting': 'unpleasant', 'terrible': 'poor', 'horrible': 'bad',
+    'awful': 'not great', 'nasty': 'unkind', 'evil': 'harmful',
+    'moron': 'person', 'fool': 'person', 'jerk': 'rude person',
+    'creep': 'unsettling person', 'kill': 'stop', 'die': 'end',
+    'destroy': 'dismantle', 'attack': 'criticize', 'retard': 'person',
+    'shut': 'be quiet', 'damn': 'darn', 'hell': 'heck', 'crap': 'stuff',
+    'toxic': 'unhealthy', 'savage': 'intense', 'filth': 'mess',
+    'scum': 'person', 'freak': 'unusual person', 'garbage': 'waste',
+    'bully': 'intimidate', 'racist': 'discriminatory', 'sexist': 'gender-biased',
+    'bigot': 'intolerant person',
+}
+
+
+# ─── Text Preprocessing ─────────────────────────────────────────────────────
+def preprocess_text(text):
+    lemmatizer = WordNetLemmatizer()
+    stop_words = set(stopwords.words('english'))
+    text = text.lower()
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'@\w+', '', text)
+    text = re.sub(r'\brt\b', '', text)
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\d+', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    tokens = text.split()
+    tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stop_words and len(word) > 2]
+    return ' '.join(tokens)
+
+
+# ─── Load & Train (cached so it only runs once) ─────────────────────────────
+@st.cache_resource(show_spinner="🔄 Training model on 25k tweets... This takes ~30s on first load.")
+def load_and_train():
+    csv_path = os.path.join(BASE_DIR, 'labeled_data.csv')
+    if not os.path.exists(csv_path):
+        st.error(f"❌ Dataset not found at {csv_path}")
+        return None, None, {}
+
+    df = pd.read_csv(csv_path)
+
+    text_col = 'tweet'
+    label_col = 'class'
+
+    for col in df.columns:
+        col_lower = col.lower()
+        if 'tweet' in col_lower or 'text' in col_lower:
+            text_col = col
+        if 'class' in col_lower or 'label' in col_lower:
+            label_col = col
+
+    df = df.dropna(subset=[text_col, label_col])
+
+    class_names = {0: 'Hate Speech', 1: 'Offensive Language', 2: 'Neither (Clean)'}
+    class_dist = df[label_col].value_counts().to_dict()
+
+    df['clean_text'] = df[text_col].astype(str).apply(preprocess_text)
+    df = df[df['clean_text'].str.len() > 0]
+
+    X = df['clean_text']
+    y = df[label_col]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    vectorizer = TfidfVectorizer(
+        max_features=15000, ngram_range=(1, 2),
+        min_df=2, max_df=0.95, sublinear_tf=True
+    )
+
+    X_train_tfidf = vectorizer.fit_transform(X_train)
+    X_test_tfidf = vectorizer.transform(X_test)
+
+    model = LogisticRegression(
+        C=1.0, max_iter=1000, solver='lbfgs',
+        class_weight='balanced', random_state=42
+    )
+    model.fit(X_train_tfidf, y_train)
+
+    y_pred = model.predict(X_test_tfidf)
+    accuracy = accuracy_score(y_test, y_pred)
+
+    stats = {
+        'accuracy': round(accuracy * 100, 2),
+        'total_samples': len(df),
+        'training_samples': len(X_train),
+        'test_samples': len(X_test),
+        'features': X_train_tfidf.shape[1],
+        'class_distribution': {class_names.get(int(k), f'Class {k}'): int(v) for k, v in class_dist.items()},
+    }
+
+    return model, vectorizer, stats
+
+
+# ─── Analyze Text ────────────────────────────────────────────────────────────
+def analyze_text(text, model, vectorizer):
+    clean = preprocess_text(text)
+    if not clean:
+        return {
+            'classification': 'Clean', 'confidence': 100.0,
+            'probabilities': {'Hate Speech': 0, 'Offensive Language': 0, 'Clean': 100},
+            'flagged_words': [], 'improved_text': text, 'suggestions': [],
+        }
+
+    text_tfidf = vectorizer.transform([clean])
+    prediction = model.predict(text_tfidf)[0]
+    probabilities = model.predict_proba(text_tfidf)[0]
+
+    class_names = {0: 'Hate Speech', 1: 'Offensive Language', 2: 'Clean'}
+    class_label = class_names.get(prediction, 'Unknown')
+
+    prob_dict = {}
+    for i, cls in enumerate(model.classes_):
+        name = class_names.get(cls, f'Class {cls}')
+        prob_dict[name] = round(float(probabilities[i]) * 100, 2)
+
+    confidence = round(float(max(probabilities)) * 100, 2)
+
+    flagged_words = []
+    improved_words = []
+    suggestions = []
+
+    for word in text.split():
+        word_lower = word.lower().strip(string.punctuation)
+        if word_lower in HATE_INDICATORS:
+            replacement = WORD_IMPROVEMENTS.get(word_lower, '[removed]')
+            flagged_words.append({'word': word, 'replacement': replacement})
+            improved_words.append(f"**{replacement}**")
+            suggestions.append(f'Replace "{word}" → "{replacement}"')
+        else:
+            improved_words.append(word)
+
+    if prediction == 0:
+        suggestions.append('⚠️ This text contains hate speech. Consider rephrasing.')
+    elif prediction == 1:
+        suggestions.append('⚠️ This text contains offensive language. Consider neutral terms.')
+    else:
+        suggestions.append('✅ This text appears clean and respectful.')
+
+    return {
+        'classification': class_label,
+        'confidence': confidence,
+        'probabilities': prob_dict,
+        'flagged_words': flagged_words,
+        'improved_text': ' '.join(improved_words),
+        'suggestions': suggestions,
+    }
+
+
+# ─── Streamlit UI ────────────────────────────────────────────────────────────
+st.set_page_config(page_title="NoHate - Hate Speech Detector", page_icon="🛡️", layout="wide")
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main { background-color: #0a0a1a; }
+    .stApp { background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 50%, #0a0a1a 100%); }
+    h1 { text-align: center; }
+    .result-box {
+        padding: 20px; border-radius: 12px; margin: 10px 0;
+        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+    }
+    .hate-badge { background: #f87171; color: white; padding: 8px 20px; border-radius: 20px; font-weight: bold; font-size: 18px; }
+    .offensive-badge { background: #fb923c; color: white; padding: 8px 20px; border-radius: 20px; font-weight: bold; font-size: 18px; }
+    .clean-badge { background: #34d399; color: white; padding: 8px 20px; border-radius: 20px; font-weight: bold; font-size: 18px; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🛡️ NoHate - Hate Speech Detector")
+st.caption("NLP Pipeline: Text Preprocessing → TF-IDF Vectorization → Logistic Regression Classification")
+
+# Load model
+model, vectorizer, stats = load_and_train()
+
+if model is None:
+    st.error("Failed to load model. Make sure `labeled_data.csv` exists.")
+    st.stop()
+
+# ─── Sidebar: Model Info ─────────────────────────────────────────────────────
+with st.sidebar:
+    st.header("📊 Model Info")
+    st.metric("Accuracy", f"{stats['accuracy']}%")
+    st.metric("Training Samples", f"{stats['training_samples']:,}")
+    st.metric("Test Samples", f"{stats['test_samples']:,}")
+    st.metric("TF-IDF Features", f"{stats['features']:,}")
+
+    st.divider()
+    st.subheader("Class Distribution")
+    for cls, count in stats.get('class_distribution', {}).items():
+        st.write(f"**{cls}**: {count:,}")
+
+    st.divider()
+    st.caption("Built with scikit-learn & Streamlit")
+
+# ─── Main Input ──────────────────────────────────────────────────────────────
+st.subheader("📝 Enter text to analyze")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    if st.button("🚨 Hate Speech Sample", use_container_width=True):
+        st.session_state['sample'] = "I hate all those people, they are disgusting trash and should die. They are subhuman and worthless scum."
+with col2:
+    if st.button("⚠️ Offensive Sample", use_container_width=True):
+        st.session_state['sample'] = "You are so stupid and dumb, what an idiot loser. Shut up you moron, nobody cares about your pathetic opinion."
+with col3:
+    if st.button("🛡️ Clean Sample", use_container_width=True):
+        st.session_state['sample'] = "I really enjoyed the seminar on artificial intelligence today. The speaker discussed fascinating advances in machine learning."
+
+default_text = st.session_state.get('sample', '')
+text_input = st.text_area("Type or paste text here:", value=default_text, height=120, max_chars=5000)
+
+if st.button("🔍 Analyze Text", type="primary", use_container_width=True):
+    if not text_input.strip():
+        st.warning("Please enter some text to analyze.")
+    else:
+        with st.spinner("Analyzing..."):
+            result = analyze_text(text_input.strip(), model, vectorizer)
+
+        # ─── Classification Result ───────────────────────────────────────
+        st.divider()
+
+        badge_class = {
+            'Hate Speech': 'hate-badge',
+            'Offensive Language': 'offensive-badge',
+            'Clean': 'clean-badge'
+        }
+        icons = {'Hate Speech': '🚨', 'Offensive Language': '⚠️', 'Clean': '🛡️'}
+
+        cls = result['classification']
+        st.markdown(
+            f'<div style="text-align:center; margin: 20px 0;">'
+            f'<span class="{badge_class.get(cls, "clean-badge")}">'
+            f'{icons.get(cls, "🔍")} {cls}</span>'
+            f'<p style="color:#94a3b8; margin-top:8px;">{result["confidence"]}% confidence</p>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        # ─── Probabilities ───────────────────────────────────────────────
+        col1, col2, col3 = st.columns(3)
+        probs = result['probabilities']
+        with col1:
+            st.metric("🚨 Hate Speech", f"{probs.get('Hate Speech', 0)}%")
+        with col2:
+            st.metric("⚠️ Offensive", f"{probs.get('Offensive Language', 0)}%")
+        with col3:
+            st.metric("🛡️ Clean", f"{probs.get('Clean', 0)}%")
+
+        # Probability bar chart
+        import plotly.graph_objects as go
+        fig = go.Figure(go.Bar(
+            x=list(probs.values()),
+            y=list(probs.keys()),
+            orientation='h',
+            marker_color=['#f87171', '#fb923c', '#34d399']
+        ))
+        fig.update_layout(
+            title="Classification Probabilities",
+            xaxis_title="Probability (%)",
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#e2e8f0'),
+            height=250,
+            margin=dict(l=20, r=20, t=40, b=20),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ─── Flagged Words ───────────────────────────────────────────────
+        if result['flagged_words']:
+            st.subheader("🚩 Flagged Words")
+            for fw in result['flagged_words']:
+                st.write(f"❌ **\"{fw['word']}\"** → ✅ \"{fw['replacement']}\"")
+
+        # ─── Improved Text ───────────────────────────────────────────────
+        st.subheader("✨ Improved Text")
+        st.markdown(result['improved_text'])
+
+        # ─── Suggestions ─────────────────────────────────────────────────
+        st.subheader("💡 Suggestions")
+        for s in result['suggestions']:
+            st.write(f"• {s}")
