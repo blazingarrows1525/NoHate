@@ -256,7 +256,6 @@ def load_and_train():
         C=1.0,
         max_iter=1000,
         solver='lbfgs',
-        multi_class='multinomial',
         class_weight='balanced',
         random_state=42
     )
