@@ -5,5 +5,5 @@ pandas
 scikit-learn
 nltk
 gunicorn
-streamlit
+streamlit>=1.40.0
 plotly
