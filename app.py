@@ -11,10 +11,9 @@ from nltk.stem import WordNetLemmatizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
 
 # ==============================
-# SAFE NLTK (NO CRASH ONLINE)
+# NLTK SAFE LOAD
 # ==============================
 try:
     nltk.data.find('corpora/stopwords')
@@ -26,39 +25,36 @@ try:
 except:
     nltk.download('wordnet')
 
-# ==============================
-# GLOBALS
-# ==============================
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
 
 # ==============================
-# TEXT PREPROCESSING
+# PREPROCESS
 # ==============================
-def preprocess_text(text):
+def preprocess(text):
     text = text.lower()
-    text = re.sub(r'http\S+|www\S+', '', text)
-    text = re.sub(r'@\w+', '', text)
-    text = re.sub(r'[^\w\s]', '', text)
-    text = re.sub(r'\d+', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r"http\S+|www\S+", "", text)
+    text = re.sub(r"@\w+", "", text)
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\d+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
 
-    tokens = text.split()
-    tokens = [lemmatizer.lemmatize(w) for w in tokens if w not in stop_words]
-    return " ".join(tokens)
+    words = text.split()
+    words = [lemmatizer.lemmatize(w) for w in words if w not in stop_words]
+
+    return " ".join(words)
 
 # ==============================
-# LOAD + TRAIN (CACHED)
+# LOAD + TRAIN MODEL (CACHED)
 # ==============================
 @st.cache_resource
 def load_model():
-    # Use small dataset for deployment stability
     df = pd.read_csv("https://raw.githubusercontent.com/dD2405/Twitter_Sentiment_Analysis/master/train.csv")
 
     df = df[['label', 'tweet']]
     df.columns = ['label', 'text']
 
-    df['clean'] = df['text'].apply(preprocess_text)
+    df['clean'] = df['text'].apply(preprocess)
 
     X = df['clean']
     y = df['label']
@@ -66,50 +62,47 @@ def load_model():
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
     vectorizer = TfidfVectorizer(max_features=5000)
-    X_train_tfidf = vectorizer.fit_transform(X_train)
+    X_train_vec = vectorizer.fit_transform(X_train)
 
     model = LogisticRegression(max_iter=200)
-    model.fit(X_train_tfidf, y_train)
+    model.fit(X_train_vec, y_train)
 
-    acc = accuracy_score(y_test, model.predict(vectorizer.transform(X_test)))
-
-    return model, vectorizer, acc
+    return model, vectorizer
 
 # ==============================
-# PREDICT
+# ANALYZE FUNCTION
 # ==============================
-def predict(text, model, vectorizer):
-    clean = preprocess_text(text)
+def analyze_text(text, model, vectorizer):
+    clean = preprocess(text)
     vec = vectorizer.transform([clean])
     pred = model.predict(vec)[0]
 
     if pred == 1:
-        return "Hate / Offensive ⚠️"
+        return "⚠️ Hate / Offensive Language"
     else:
-        return "Clean ✅"
+        return "✅ Clean Text"
 
 # ==============================
 # STREAMLIT UI
 # ==============================
-st.set_page_config(page_title="NoHate", layout="wide")
+st.set_page_config(page_title="NoHate", layout="centered")
 
 st.title("🛡️ NoHate - NLP Classifier")
+st.write("Detect hate speech using NLP")
 
-st.write("Detect hate / offensive language using NLP")
-
-# Load model
+# Load model once
 with st.spinner("Loading model..."):
-    model, vectorizer, acc = load_model()
+    model, vectorizer = load_model()
 
-st.success(f"Model Loaded ✅ | Accuracy: {round(acc*100,2)}%")
+st.success("Model Ready ✅")
 
 # Input
-text = st.text_area("Enter text to analyze")
+user_input = st.text_area("Enter text")
 
 if st.button("Classify"):
-    if text.strip() == "":
+    if user_input.strip() == "":
         st.warning("Please enter text")
     else:
-        result = predict(text, model, vectorizer)
+        result = analyze_text(user_input, model, vectorizer)
         st.subheader("Result:")
         st.write(result)
