@@ -14,6 +14,10 @@ import os
 import re
 import string
 import json
+import traceback
+
+# Base directory (where app.py lives) - critical for Render deployment
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 import numpy as np
 import pandas as pd
 import nltk
@@ -147,34 +151,28 @@ def load_and_train():
     print("=" * 60)
 
     try:
-        import kagglehub
+        # Always try local CSV first (reliable on Render)
+        csv_path = os.path.join(BASE_DIR, 'labeled_data.csv')
+        print(f"  📂 Looking for dataset at: {csv_path}")
+        print(f"  📂 File exists: {os.path.exists(csv_path)}")
 
-        # Download the dataset and get the local directory path
-        dataset_path = kagglehub.dataset_download(
-            "mrmorj/hate-speech-and-offensive-language-dataset"
-        )
-        csv_path = os.path.join(dataset_path, 'labeled_data.csv')
-        df = pd.read_csv(csv_path)
-        print(f"  ✅ Dataset loaded: {df.shape[0]} records, {df.shape[1]} columns")
-        print(f"  📋 Columns: {list(df.columns)}")
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            print(f"  ✅ Dataset loaded from local file: {df.shape[0]} records")
+        else:
+            # Fallback to kagglehub
+            print("  ⚠️ Local CSV not found, trying kagglehub...")
+            import kagglehub
+            dataset_path = kagglehub.dataset_download(
+                "mrmorj/hate-speech-and-offensive-language-dataset"
+            )
+            csv_path = os.path.join(dataset_path, 'labeled_data.csv')
+            df = pd.read_csv(csv_path)
+            print(f"  ✅ Dataset loaded from Kaggle: {df.shape[0]} records")
     except Exception as e:
-        print(f"  ⚠️  Kaggle loading failed: {e}")
-        print("  📂 Attempting to load from local CSV fallback...")
-        # Fallback: try loading from a local file
-        local_paths = [
-            'labeled_data.csv',
-            'data/labeled_data.csv',
-        ]
-        df = None
-        for path in local_paths:
-            if os.path.exists(path):
-                df = pd.read_csv(path)
-                print(f"  ✅ Loaded from local file: {path}")
-                break
-        if df is None:
-            print("  ❌ No dataset found. Please ensure kagglehub is installed.")
-            print("  Run: pip install kagglehub[pandas-datasets]")
-            return
+        print(f"  ❌ FAILED to load dataset: {e}")
+        traceback.print_exc()
+        return
 
     # ─── Data Exploration ────────────────────────────────────────────────
     print("\n  📊 Dataset Overview:")
@@ -304,26 +302,98 @@ def load_and_train():
 def analyze_text(text):
     global model, vectorizer
 
-    # 🔥 AUTO LOAD MODEL IF NOT LOADED
+    # Auto-load model if not loaded
     if model is None or vectorizer is None:
         print("⚠️ Model not loaded, loading now...")
         load_and_train()
 
     if model is None or vectorizer is None:
-        return {"error": "Model failed to load"}
+        return {"error": "Model failed to load. Check server logs."}
 
-    cleaned = preprocess_text(text)
-    vec = vectorizer.transform([cleaned])
-    pred = model.predict(vec)[0]
+    # Preprocess
+    clean = preprocess_text(text)
 
-    labels = {
-        0: "Hate Speech",
-        1: "Offensive Language",
-        2: "Clean"
-    }
+    if not clean:
+        return {
+            'classification': 'Clean',
+            'class_id': 2,
+            'confidence': 100.0,
+            'probabilities': {'Hate Speech': 0, 'Offensive Language': 0, 'Clean': 100},
+            'flagged_words': [],
+            'improved_text': text,
+            'suggestions': ['The text appears clean after analysis.'],
+            'original_text': text,
+            'preprocessed_text': clean,
+        }
+
+    # Vectorize and predict
+    text_tfidf = vectorizer.transform([clean])
+    prediction = model.predict(text_tfidf)[0]
+    probabilities = model.predict_proba(text_tfidf)[0]
+
+    class_names = {0: 'Hate Speech', 1: 'Offensive Language', 2: 'Clean'}
+    class_label = class_names.get(prediction, 'Unknown')
+
+    # Probability percentages
+    prob_dict = {}
+    for i, cls in enumerate(model.classes_):
+        name = class_names.get(cls, f'Class {cls}')
+        prob_dict[name] = round(float(probabilities[i]) * 100, 2)
+
+    confidence = round(float(max(probabilities)) * 100, 2)
+
+    # Word-level analysis
+    words = text.lower().split()
+    flagged_words = []
+    improved_words = []
+    suggestions = []
+
+    for word in text.split():
+        word_lower = word.lower().strip(string.punctuation)
+        if word_lower in HATE_INDICATORS:
+            replacement = WORD_IMPROVEMENTS.get(word_lower, '[removed]')
+            flagged_words.append({
+                'word': word,
+                'reason': f'"{word}" is flagged as potentially hateful/offensive',
+                'replacement': replacement,
+                'severity': 'high'
+            })
+            improved_words.append(replacement)
+            suggestions.append(f'Replace "{word}" with "{replacement}".')
+        else:
+            improved_words.append(word)
+
+    improved_text = ' '.join(improved_words)
+
+    if prediction == 0:
+        suggestions.append('This text contains hate speech. Consider rephrasing.')
+    elif prediction == 1:
+        suggestions.append('This text contains offensive language. Consider using neutral terms.')
+    else:
+        suggestions.append('This text appears clean and respectful.')
+
+    total_words = len(words) if words else 1
+    hateful_count = len(flagged_words)
+    hate_percentage = round((hateful_count / total_words) * 100, 2)
+    clean_percentage = round(100 - hate_percentage, 2)
 
     return {
-        "prediction": labels.get(pred, "Unknown")
+        'classification': class_label,
+        'class_id': int(prediction),
+        'confidence': confidence,
+        'probabilities': prob_dict,
+        'flagged_words': flagged_words,
+        'improved_text': improved_text,
+        'suggestions': suggestions,
+        'original_text': text,
+        'preprocessed_text': clean,
+        'stats': {
+            'total_words': total_words,
+            'hateful_words': hateful_count,
+            'clean_words': total_words - hateful_count,
+            'hate_percentage': hate_percentage,
+            'clean_percentage': clean_percentage,
+        }
     }
 
 
