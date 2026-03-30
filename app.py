@@ -302,116 +302,28 @@ def load_and_train():
 
 # ─── Analyze Text ────────────────────────────────────────────────────────────
 def analyze_text(text):
-    """Analyze a piece of text for hate speech content."""
     global model, vectorizer
 
+    # 🔥 AUTO LOAD MODEL IF NOT LOADED
     if model is None or vectorizer is None:
-        return {'error': 'Model not loaded'}
+        print("⚠️ Model not loaded, loading now...")
+        load_and_train()
 
-    # Preprocess the input
-    clean = preprocess_text(text)
+    if model is None or vectorizer is None:
+        return {"error": "Model failed to load"}
 
-    if not clean:
-        return {
-            'classification': 'Clean',
-            'class_id': 2,
-            'confidence': 100.0,
-            'probabilities': {'Hate Speech': 0, 'Offensive Language': 0, 'Clean': 100},
-            'flagged_words': [],
-            'improved_text': text,
-            'suggestions': ['The text appears clean after analysis.'],
-            'original_text': text,
-            'preprocessed_text': clean,
-        }
+    cleaned = preprocess_text(text)
+    vec = vectorizer.transform([cleaned])
+    pred = model.predict(vec)[0]
 
-    # Vectorize and predict
-    text_tfidf = vectorizer.transform([clean])
-    prediction = model.predict(text_tfidf)[0]
-    probabilities = model.predict_proba(text_tfidf)[0]
-
-    class_names = {0: 'Hate Speech', 1: 'Offensive Language', 2: 'Clean'}
-    class_label = class_names.get(prediction, 'Unknown')
-
-    # Get probability percentages
-    prob_dict = {}
-    for i, cls in enumerate(model.classes_):
-        name = class_names.get(cls, f'Class {cls}')
-        prob_dict[name] = round(float(probabilities[i]) * 100, 2)
-
-    confidence = round(float(max(probabilities)) * 100, 2)
-
-    # ─── Word-level Analysis ─────────────────────────────────────────────
-    words = text.lower().split()
-    flagged_words = []
-    improved_words = []
-    suggestions = []
-
-    # Get feature names and coefficients for hate speech class
-    feature_names = vectorizer.get_feature_names_out()
-
-    for word in text.split():
-        word_lower = word.lower().strip(string.punctuation)
-
-        # Check if word is in our hate indicators
-        is_hateful = word_lower in HATE_INDICATORS
-
-        # Also check TF-IDF importance for hate class
-        if word_lower in feature_names:
-            word_idx = list(feature_names).index(word_lower)
-            # Check coefficient for hate speech class (class 0)
-            hate_class_idx = list(model.classes_).index(0) if 0 in model.classes_ else 0
-            coef = model.coef_[hate_class_idx][word_idx]
-            if coef > 0.5:
-                is_hateful = True
-
-        if is_hateful:
-            replacement = WORD_IMPROVEMENTS.get(word_lower, '[removed]')
-            flagged_words.append({
-                'word': word,
-                'reason': f'"{word}" is flagged as potentially hateful/offensive language',
-                'replacement': replacement,
-                'severity': 'high' if word_lower in HATE_INDICATORS else 'medium'
-            })
-            improved_words.append(replacement)
-            suggestions.append(f'Replace "{word}" with "{replacement}" for more respectful communication.')
-        else:
-            improved_words.append(word)
-
-    improved_text = ' '.join(improved_words)
-
-    # Add general suggestions
-    if prediction == 0:
-        suggestions.append('💡 This text contains hate speech. Consider rephrasing to express your opinion without targeting groups or individuals.')
-        suggestions.append('💡 Focus on behaviors or ideas rather than attacking people based on identity.')
-    elif prediction == 1:
-        suggestions.append('💡 This text contains offensive language. Consider using more neutral terms.')
-        suggestions.append('💡 Express your frustration constructively without resorting to slurs or insults.')
-    else:
-        suggestions.append('✅ This text appears to be clean and respectful.')
-
-    # Compute hate intensity metrics
-    total_words = len(words) if words else 1
-    hateful_count = len(flagged_words)
-    hate_percentage = round((hateful_count / total_words) * 100, 2)
-    clean_percentage = round(100 - hate_percentage, 2)
+    labels = {
+        0: "Hate Speech",
+        1: "Offensive Language",
+        2: "Clean"
+    }
 
     return {
-        'classification': class_label,
-        'class_id': int(prediction),
-        'confidence': confidence,
-        'probabilities': prob_dict,
-        'flagged_words': flagged_words,
-        'improved_text': improved_text,
-        'suggestions': suggestions,
-        'original_text': text,
-        'preprocessed_text': clean,
-        'stats': {
-            'total_words': total_words,
-            'hateful_words': hateful_count,
-            'clean_words': total_words - hateful_count,
-            'hate_percentage': hate_percentage,
-            'clean_percentage': clean_percentage,
-        }
+        "prediction": labels.get(pred, "Unknown")
     }
 
 
