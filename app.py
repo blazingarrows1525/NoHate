@@ -15,6 +15,7 @@ import re
 import string
 import json
 import traceback
+import threading
 
 # Base directory (where app.py lives) - critical for Render deployment
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -396,8 +397,8 @@ def analyze_text(text):
     }
 
 
-print("🚀 Starting app and loading model...")
-load_and_train()
+print("🚀 Starting app, loading model in background...")
+threading.Thread(target=load_and_train, daemon=True).start()
 
 # ─── API Routes ──────────────────────────────────────────────────────────────
 @app.route('/')
