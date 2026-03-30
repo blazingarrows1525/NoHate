@@ -10,19 +10,27 @@ import numpy as np
 import pandas as pd
 import nltk
 import streamlit as st
+import plotly.graph_objects as go
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score
 
 # Download NLTK data
-nltk.download('stopwords', quiet=True)
-nltk.download('wordnet', quiet=True)
-nltk.download('omw-1.4', quiet=True)
-nltk.download('punkt', quiet=True)
-nltk.download('punkt_tab', quiet=True)
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords', quiet=True)
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('wordnet', quiet=True)
+try:
+    nltk.data.find('corpora/omw-1.4')
+except LookupError:
+    nltk.download('omw-1.4', quiet=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -56,11 +64,12 @@ WORD_IMPROVEMENTS = {
     'bigot': 'intolerant person',
 }
 
+lemmatizer = WordNetLemmatizer()
+stop_words = set(stopwords.words('english'))
+
 
 # ─── Text Preprocessing ─────────────────────────────────────────────────────
 def preprocess_text(text):
-    lemmatizer = WordNetLemmatizer()
-    stop_words = set(stopwords.words('english'))
     text = text.lower()
     text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
     text = re.sub(r'@\w+', '', text)
@@ -74,11 +83,10 @@ def preprocess_text(text):
 
 
 # ─── Load & Train (cached so it only runs once) ─────────────────────────────
-@st.cache_resource(show_spinner="🔄 Training model on 25k tweets... This takes ~30s on first load.")
+@st.cache_resource(show_spinner="Training model on 25k tweets... please wait ~30s")
 def load_and_train():
     csv_path = os.path.join(BASE_DIR, 'labeled_data.csv')
     if not os.path.exists(csv_path):
-        st.error(f"❌ Dataset not found at {csv_path}")
         return None, None, {}
 
     df = pd.read_csv(csv_path)
@@ -170,17 +178,17 @@ def analyze_text(text, model, vectorizer):
         if word_lower in HATE_INDICATORS:
             replacement = WORD_IMPROVEMENTS.get(word_lower, '[removed]')
             flagged_words.append({'word': word, 'replacement': replacement})
-            improved_words.append(f"**{replacement}**")
-            suggestions.append(f'Replace "{word}" → "{replacement}"')
+            improved_words.append(replacement)
+            suggestions.append(f'Replace "{word}" with "{replacement}"')
         else:
             improved_words.append(word)
 
     if prediction == 0:
-        suggestions.append('⚠️ This text contains hate speech. Consider rephrasing.')
+        suggestions.append('This text contains hate speech. Consider rephrasing.')
     elif prediction == 1:
-        suggestions.append('⚠️ This text contains offensive language. Consider neutral terms.')
+        suggestions.append('This text contains offensive language. Consider neutral terms.')
     else:
-        suggestions.append('✅ This text appears clean and respectful.')
+        suggestions.append('This text appears clean and respectful.')
 
     return {
         'classification': class_label,
@@ -192,24 +200,8 @@ def analyze_text(text, model, vectorizer):
     }
 
 
-# ─── Streamlit UI ────────────────────────────────────────────────────────────
+# ─── Streamlit Page Config ───────────────────────────────────────────────────
 st.set_page_config(page_title="NoHate - Hate Speech Detector", page_icon="🛡️", layout="wide")
-
-# Custom CSS
-st.markdown("""
-<style>
-    .main { background-color: #0a0a1a; }
-    .stApp { background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 50%, #0a0a1a 100%); }
-    h1 { text-align: center; }
-    .result-box {
-        padding: 20px; border-radius: 12px; margin: 10px 0;
-        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-    }
-    .hate-badge { background: #f87171; color: white; padding: 8px 20px; border-radius: 20px; font-weight: bold; font-size: 18px; }
-    .offensive-badge { background: #fb923c; color: white; padding: 8px 20px; border-radius: 20px; font-weight: bold; font-size: 18px; }
-    .clean-badge { background: #34d399; color: white; padding: 8px 20px; border-radius: 20px; font-weight: bold; font-size: 18px; }
-</style>
-""", unsafe_allow_html=True)
 
 st.title("🛡️ NoHate - Hate Speech Detector")
 st.caption("NLP Pipeline: Text Preprocessing → TF-IDF Vectorization → Logistic Regression Classification")
@@ -218,7 +210,7 @@ st.caption("NLP Pipeline: Text Preprocessing → TF-IDF Vectorization → Logist
 model, vectorizer, stats = load_and_train()
 
 if model is None:
-    st.error("Failed to load model. Make sure `labeled_data.csv` exists.")
+    st.error("Failed to load model. Make sure labeled_data.csv exists in the repo.")
     st.stop()
 
 # ─── Sidebar: Model Info ─────────────────────────────────────────────────────
@@ -228,12 +220,10 @@ with st.sidebar:
     st.metric("Training Samples", f"{stats['training_samples']:,}")
     st.metric("Test Samples", f"{stats['test_samples']:,}")
     st.metric("TF-IDF Features", f"{stats['features']:,}")
-
     st.divider()
     st.subheader("Class Distribution")
     for cls, count in stats.get('class_distribution', {}).items():
         st.write(f"**{cls}**: {count:,}")
-
     st.divider()
     st.caption("Built with scikit-learn & Streamlit")
 
@@ -261,29 +251,21 @@ if st.button("🔍 Analyze Text", type="primary", use_container_width=True):
         with st.spinner("Analyzing..."):
             result = analyze_text(text_input.strip(), model, vectorizer)
 
-        # ─── Classification Result ───────────────────────────────────────
         st.divider()
 
-        badge_class = {
-            'Hate Speech': 'hate-badge',
-            'Offensive Language': 'offensive-badge',
-            'Clean': 'clean-badge'
-        }
-        icons = {'Hate Speech': '🚨', 'Offensive Language': '⚠️', 'Clean': '🛡️'}
-
+        # ─── Classification Result ───────────────────────────────────────
         cls = result['classification']
-        st.markdown(
-            f'<div style="text-align:center; margin: 20px 0;">'
-            f'<span class="{badge_class.get(cls, "clean-badge")}">'
-            f'{icons.get(cls, "🔍")} {cls}</span>'
-            f'<p style="color:#94a3b8; margin-top:8px;">{result["confidence"]}% confidence</p>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
+        icons = {'Hate Speech': '🚨', 'Offensive Language': '⚠️', 'Clean': '🛡️'}
+        colors = {'Hate Speech': 'red', 'Offensive Language': 'orange', 'Clean': 'green'}
+
+        st.markdown(f"### {icons.get(cls, '🔍')} Classification: :{colors.get(cls, 'blue')}[{cls}]")
+        st.markdown(f"**Confidence:** {result['confidence']}%")
 
         # ─── Probabilities ───────────────────────────────────────────────
-        col1, col2, col3 = st.columns(3)
+        st.subheader("📊 Probabilities")
         probs = result['probabilities']
+
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("🚨 Hate Speech", f"{probs.get('Hate Speech', 0)}%")
         with col2:
@@ -291,8 +273,6 @@ if st.button("🔍 Analyze Text", type="primary", use_container_width=True):
         with col3:
             st.metric("🛡️ Clean", f"{probs.get('Clean', 0)}%")
 
-        # Probability bar chart
-        import plotly.graph_objects as go
         fig = go.Figure(go.Bar(
             x=list(probs.values()),
             y=list(probs.keys()),
@@ -300,13 +280,9 @@ if st.button("🔍 Analyze Text", type="primary", use_container_width=True):
             marker_color=['#f87171', '#fb923c', '#34d399']
         ))
         fig.update_layout(
-            title="Classification Probabilities",
             xaxis_title="Probability (%)",
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='#e2e8f0'),
-            height=250,
-            margin=dict(l=20, r=20, t=40, b=20),
+            height=220,
+            margin=dict(l=10, r=10, t=10, b=10),
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -318,7 +294,7 @@ if st.button("🔍 Analyze Text", type="primary", use_container_width=True):
 
         # ─── Improved Text ───────────────────────────────────────────────
         st.subheader("✨ Improved Text")
-        st.markdown(result['improved_text'])
+        st.info(result['improved_text'])
 
         # ─── Suggestions ─────────────────────────────────────────────────
         st.subheader("💡 Suggestions")
