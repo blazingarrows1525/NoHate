@@ -415,6 +415,9 @@ def analyze_text(text):
     }
 
 
+print("🚀 Starting app and loading model...")
+load_and_train()
+
 # ─── API Routes ──────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
@@ -444,8 +447,6 @@ def api_model_info():
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
-if __name__ == '__main__':
-    load_and_train()
-    print("  🌐 Starting server at http://localhost:5001")
-    print("  🌐 Open your browser and navigate to http://localhost:5001\n")
-    app.run(debug=False, host='0.0.0.0', port=5001)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
